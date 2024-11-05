@@ -1,0 +1,561 @@
+# Phân tích đặc điểm mưa giờ trong 10 năm ở trạm đo Trà My, thị trấn Bắc Trà My, tỉnh Quảng Nam
+
+## 1. Tiền xử lý dữ liệu
+
+```{r}
+library("readxl")
+data <- read_excel("data/hourly_rain_tra_my.xlsx")
+head(data)
+```
+
+```{r}
+# Đổi tên các cột để dễ làm việc
+colnames(data)[colnames(data) == "Trượt lở (0-Không; 1-Xảy ra trượt lở)"] <- "truot_lo"
+colnames(data)[colnames(data) == "Luong mua"] <- "mua"
+colnames(data)[colnames(data) == "Gio"] <- "gio"
+colnames(data)[colnames(data) == "Ngay"] <- "ngay"
+head(data, 10)
+```
+
+### 1.1. Xử lý dữ liệu trống
+
+**Số hàng trong dữ liệu**:
+
+```{r}
+nrow(data)
+```
+
+**Số dữ liệu trống ở mỗi cột**:
+
+```{r}
+colSums(is.na(data))
+```
+
+Như vậy, có tổng cộng 2547 ô dữ liệu trống, tất cả đều nằm trong cột `mua`.
+Để xử lý những dữ liệu trống này, ta thực hiện phương pháp **Nội suy** (Interpolation) tuyến tính. Ý tưởng của phương pháp này là điền vào những ô dữ liệu trống những giá trị nằm trên đường thẳng nối hai điểm trước và sau nó.
+
+```{r}
+library(zoo)
+data$mua <- na.approx(data$mua)
+colSums(is.na(data))
+```
+
+### 1.2. Trực quan hóa dữ liệu
+
+```{r}
+plot(data$mua, col=rgb(0, 0, 0, alpha=0.5),
+     ylab="Luong mua(mm)", xlab="Thoi diem")
+```
+
+Khi tìm hiểu thêm, ta nhận thấy các sự kiện bão lũ mà Trà My bị chịu ảnh hưởng:
+- 11/2013: bão Hải Yến.
+- 11/2017: bão Damrey
+Tuy nhiên, đây đều là những hiện tượng tự nhiên nên ta không nên bỏ qua những điểm dị thương này.
+
+```{r}
+hist(data$mua, breaks = 100, xlab="Lượng mưa trong 1 giờ(mm)", ylab="Tần suất", main="Biểu đồ tần suất của lượng mưa")
+```
+
+### 1.3. Các ước lượng đặc trưng
+
+**Trung bình mẫu**
+
+```{r}
+mean_rain <- mean(data$mua)
+mean_rain
+```
+
+**Phương sai mẫu**
+
+```{r}
+var_rain <- var(data$mua)
+var_rain
+```
+
+**Trung vị mẫu**
+
+```{r}
+median(data$mua)
+```
+
+### 1.4. Xác định phân phối
+
+Dựa vào histogram của lượng mưa theo giờ, ta có thể dự đoán rằng phân phối này có thể là
+phân phối Gamma. Trước tiên, ta ước lượng các tham số từ đặc trưng mẫu.
+
+```{r}
+k_hat <- (mean_rain^2) / var_rain
+theta_hat <- var_rain / mean_rain
+print(k_hat)
+print(theta_hat)
+```
+
+Thử vẽ phân phối
+
+```{r}
+hist(data$mua, breaks = 100)
+```
+
+```{r}
+hist(rgamma(85000, k_hat, theta_hat), breaks=100, main="Phân phối Gamma", xlab="Giá trị", ylab="Tần số")
+```
+
+Trông có vẻ như khá giống nhau. Ta hãy thử xem xét kỹ hơn xem thực sự rằng phân phối này
+có fit với dữ liệu không. Nhưng trước tiên, phân phối Gamma chỉ phù hợp với giá trị dương.
+Vậy nên, với những điểm mà lượng mưa = 0 thì ta đặt nó là số rất nhỏ: 0.0000001
+
+```{r}
+library(MASS)
+non_zero_rain <- ifelse(data$mua == 0, 0.001, data$mua)
+fit_gamma <- fitdistr(non_zero_rain, "gamma")
+fit_gamma
+```
+
+```{r}
+hist(data$mua, breaks = 100, probability = TRUE, main = "So sánh phân bố", xlab = "Giá trị", col = "lightblue", ylab="Mật độ")
+x_values <- seq(0, max(data$mua), length.out = 1000)
+y_values <- dgamma(x_values, shape = fit_gamma$estimate[1], rate = fit_gamma$estimate[2])
+lines(x_values, y_values, col = "red", lwd = 2)
+```
+
+## 2. Biến đổi dữ liệu
+### 2.1. Chuyển dữ liệu lượng mưa thành dạng Time Series
+
+Do dữ liệu lượng mưa theo giờ sẽ khiến cho việc xử lý chuỗi thời gian khó khăn hơn và không có ý nghĩa nhiều cho việc xem xét xu hướng tổng quát dài hạn, nên ta sẽ gom dữ liệu thành lượng mưa trung bình theo tuần và theo tháng.
+
+Ta sẽ sử dụng gói `dplyr` và `lubridate` để thao túng dữ liệu thời gian hiệu quả trong R.
+
+```{r}
+library("dplyr")
+library("lubridate")
+
+# Chuyển cột ngày thành dạng Date
+data$ngay <- as.Date(data$ngay)
+data
+```
+
+
+```{r}
+monthly_rain <- data %>%
+  group_by(thang=floor_date(data$ngay, "month")) %>%
+  summarise(luong_mua_trung_binh = mean(mua, na.rm = T))
+
+head(monthly_rain, 10)
+```
+
+```{r}
+month_ts <- ts(as.vector(monthly_rain$luong_mua_trung_binh), start=c(2008, 1), frequency=12)
+plot(month_ts, type="o", xlab="Thời gian", ylab="Lượng mưa trung bình tháng", main="Lượng mưa hàng tháng tại tỉnh Trà My, 2008 - 2018")
+```
+
+## 3. Phân tích lượng mưa
+### 3.1. Phân tích xu hướng
+
+```{r}
+library(TSA)
+month. <- season(month_ts)
+trend.month <- lm(month_ts~month. - 1)
+summary(trend.month)
+```
+
+
+```{r}
+plot(y=rstudent(trend.month), x=as.vector(time(month_ts)), ylab="Phần dư chuẩn hóa", xlab="Thời gian", type="l")
+points(y=rstudent(trend.month), 
+       x=as.vector(time(month_ts)),
+       pch=as.vector(season(month_ts)))
+```
+
+```{r}
+plot(y=rstudent(trend.month),
+     x=as.vector(fitted(trend.month)),
+     xlab="Giá trị ước lượng",
+     ylab="Phần dư chuẩn hóa")
+points(y=rstudent(trend.month), 
+       x=as.vector(fitted(trend.month)),
+       pch=as.vector(season(month_ts)))
+```
+
+Có thể thấy rằng các phần dư nhỏ tăng dần theo giá trị dự đoán của xu hướng 
+
+
+```{r}
+hist(rstudent(trend.month), xlab="Phần dư chuẩn hóa", ylab="Tần suất", main="Biểu đồ tần suất phần dư", breaks=50)
+```
+
+```{r}
+qqnorm(rstudent(trend.month))
+qqline(rstudent(trend.month))
+```
+
+```{r}
+shapiro.test(rstudent(trend.month))
+```
+
+Có thể thấy phần dư không tuân theo phân phối chuẩn.
+
+### 3.2. Khảo sát tính dừng của dữ liệu.
+
+Sau khi đã tìm được mô hình xu hướng cho dữ liêu, tiếp theo ta sẽ khảo sát xem dữ liệu có mang tính dừng hay không để tìm ra mô hình cho chuỗi thời gian.
+
+```{r}
+library(tseries)
+adf.test(month_ts)
+```
+
+Giá trị p-value = 0.01 < 0.05 khiến ta có cơ sở để bác bỏ giả thiết H0: dữ liệu không có tính dừng. Điều này nghĩa là ta chấp nhận đối thiết H1: dữ liệu có tính dừng.
+
+Như vậy, ta sẽ tìm những mô hình cho quá trình mang tính dừng.
+
+### 3.3. Khảo sát mô hình cho chuỗi dừng
+
+Trước hết, ta sẽ xem xét hàm tự tương quan của chuỗi.
+
+```{r}
+library(zoo)
+acf(coredata(month_ts), lag.max = 36, main="Hàm tự tương quan trên độ trễ", xlab="Độ trễ")
+```
+
+
+```{r}
+pacf(coredata(month_ts), lag.max = 36, main="Hàm tự tương quan riêng phần trên độ trễ",
+     xlab="Độ trễ")
+```
+
+Dựa vào hai biểu đồ ACF và PACF trên, có thể thấy rằng ARMA(1, 1) và ARMA(7, 1) là mô hình tương đối phù hợp. Về phần MA, ACF đạt ngưỡng tại độ trễ 1 và tụt rất sâu sau đó, thêm với việc là PACF tại độ trễ 1 bị mất đi từ từ. Về phần AR thì ngược lại, PACF vượt ngưỡng tại độ trễ 1 và 7
+
+Bên cạnh đó, sự tự tương quan cũng được thể hiện rõ tại các tháng 12, 24 gợi ý cho chúng ta rằng dữ liệu có xu hướng mùa vụ.
+
+### 3.3. Ước lượng tham số cho mô hình ARMA
+
+```{r}
+test.model = auto.arima(month_ts)
+test.model
+```
+
+
+Trước hết, ta xét mô hình ARMA(1, 1)
+
+
+```{r}
+arma.month.7 <- arima(month_ts, c(7, 0, 1), method = "ML",
+                  seasonal = list(order=c(1, 0, 1), period=12))
+arma.month.7
+```
+
+### 3.4. Khảo sát mô hình
+
+#### 3.4.1. Khảo sát phần dư
+
+```{r}
+# Calculate residuals
+residuals_ar <- residuals(arma.month.7)
+
+# Standardize the residuals
+std_residuals <- residuals_ar / sd(residuals_ar)
+
+plot(std_residuals, ylab="Phần dư chuẩn hóa", type="o", xlab="Thời gian")
+abline(h=0)
+```
+
+Nhận thấy rằng phần dư dao động quanh 0 và không có xu hướng cụ thể nào, ta xác nhận rằng mô hình đã đủ tốt. Phần dư ở tầm năm 2018 có giá trị rất cao, trùng hợp với sự kiện bão lũ. Như vậy, bỏ qua sự kiện đặc biệt như vậy, có thể thấy rằng biểu đồ phần dư này tương đối tốt.
+
+```{r}
+qqnorm(residuals_ar)
+qqline(residuals_ar)
+```
+
+```{r}
+shapiro.test(residuals_ar)
+```
+
+```{r}
+hist(residuals_ar, breaks=50, main="Biểu đồ tần suất của phần dư")
+```
+
+
+
+```{r}
+acf(residuals(arma.month.7), main="ACF của phần dư theo độ trễ", xlab="Độ trễ", lag.max = 36)
+```
+
+## 4. Dự đoán
+
+```{r}
+plot(arma.month.7, n.ahead = 48, type="b", xlab="Thời gian", ylab="Lượng mưa")
+abline(h=coef(arma.month.7)[names(coef(arma.month.7)) == "intercept"])
+```
+
+## 5. Xử lý điểm dị thường
+
+```{r}
+detectIO(arma.month.7)
+```
+
+```{r}
+detectAO(arma.month.7)
+```
+
+Có thể thấy rằng hai thời điểm t = 108 và 119 đều là những additive outlier do giá trị test của AO là lớn hơn IO. Như vậy, ta sẽ train lại mô hình nhưng thêm các tham số `ao` vào.
+
+```{r}
+final.arma <- arimax(month_ts, c(7, 0, 1), method = "ML",
+                     seasonal = list(order=c(1, 0, 1), period=12),
+                     io=c(108, 119))
+final.arma
+```
+
+```{r}
+residuals_arma_final <- residuals(final.arma)
+
+# Standardize the residuals
+std_residuals_final <- residuals_arma_final / sd(residuals_arma_final)
+
+plot(std_residuals_final, ylab="Standardized Residuals", type="o")
+abline(h=0)
+```
+
+```{r}
+hist(residuals_arma_final, breaks=50)
+```
+
+```{r}
+shapiro.test(residuals_arma_final)
+```
+
+
+```{r}
+qqnorm(residuals_arma_final)
+qqline(residuals_arma_final)
+```
+
+```{r}
+acf(coredata(residuals_arma_final))
+```
+
+
+```{r}
+coef(final.arma)[-13:-12]
+```
+## 6. Phân tích trượt lở
+
+### 6.1. Phương pháp dùng lượng mưa tích lũy
+
+```{r}
+# Lọc các hàng mà truot_lo bằng 1
+short_rains_truotlo <- data$mua[data$truot_lo == 1]
+sr_indices <- which(data$truot_lo == 1)
+long_rains_truotlo = numeric(0)
+for (i in 1:length(sr_indices)) {
+  index = sr_indices[i]
+  last_rain = index - 1
+  while (data$mua[last_rain] > 0) {
+    last_rain = last_rain - 1
+  }
+  sum_longrain = sum(data$mua[last_rain:index])
+  long_rains_truotlo = append(long_rains_truotlo, sum_longrain)
+}
+
+```
+
+```{r}
+short_rains_nolo <- data$mua[data$truot_lo == 0]
+short_rains_nolo <- short_rains_nolo[11:length(short_rains_nolo)]
+sr_nolo_indices <- which(data$truot_lo == 0)
+long_rains_nolo = numeric(0)
+for (i in 1:length(sr_nolo_indices)) {
+  if (sr_nolo_indices[i] < 11) {
+    next
+  }
+  index = sr_nolo_indices[i]
+  last_rain = index - 1
+  while (data$mua[last_rain] > 0) {
+    last_rain = last_rain - 1
+  }
+  sum_longrain = sum(data$mua[last_rain:index])
+  long_rains_nolo = append(long_rains_nolo, sum_longrain)
+}
+```
+
+```{r}
+print(length(short_rains_nolo))
+print(length(long_rains_nolo))
+```
+
+
+```{r}
+plot(long_rains_nolo, short_rains_nolo, col="lightblue",
+     main="", xlab="Chỉ số mưa dài hạn", ylab="Chỉ số mưa ngắn hạn")
+points(long_rains_truotlo, short_rains_truotlo, col="red")
+lines(c(240, 0), c(0, 45))
+```
+
+```{r}
+df_nolo <- data.frame(short_rains_nolo, long_rains_nolo, rep(0, length(short_rains_nolo)))
+colnames(df_nolo) <- c("Ngan_han", "Dai_han", "Nhan")
+df_lo <- data.frame(short_rains_truotlo, long_rains_truotlo, rep(1, length(long_rains_truotlo)))
+colnames(df_lo) <- c("Ngan_han", "Dai_han", "Nhan")
+df <- rbind(df_nolo, df_lo)
+```
+
+```{r}
+tail(df)
+```
+
+
+```{r}
+library(e1071)
+model.truotlo <- glm(Nhan ~ Ngan_han + Dai_han, data = df, family="binomial")
+summary(model.truotlo)
+```
+
+```{r}
+predicted_prob <- predict(model.truotlo, type = "response")
+
+# Chọn ngưỡng (thường là 0.5)
+threshold <- 0.5
+predicted_classes <- ifelse(predicted_prob > threshold, 1, 0)
+
+# Tạo confusion matrix
+confusion_matrix <- table(Actual = df$Nhan, Predicted = predicted_classes)
+
+# Hiển thị confusion matrix
+print(confusion_matrix)
+
+
+# Tính độ chính xác
+TP <- confusion_matrix[2, 2]  # True Positive
+TN <- confusion_matrix[1, 1]  # True Negative
+FP <- confusion_matrix[1, 2]  # False Positive
+FN <- confusion_matrix[2, 1]  # False Negative
+
+# Tính tổng số dự đoán
+total_predictions <- sum(confusion_matrix)
+
+# Tính độ chính xác
+accuracy <- (TP + TN) / total_predictions
+
+# Hiển thị độ chính xác
+print(paste("Độ chính xác:", round(accuracy * 100, 2), "%"))
+```
+
+## 7. Phân tích giá trị cực đoan
+
+```{r}
+plot(data$mua, ylab="Lượng mưa", xlab="Thời điểm")
+abline(h=25, col="red")
+```
+
+Để phân tích giá trị cực đoan, ta sẽ chọn những lượng mưa lớn hơn 25mm.
+
+```{r}
+rain.25mm <- data[data$mua > 25, ]
+dim(rain.25mm)
+```
+
+```{r}
+hist(rain.25mm$mua, breaks = 50, xlab="Lượng mưa", ylab="Tần suất", main="Biểu đồ tần suất.")
+```
+
+### 7.1. GPD model
+
+```{r}
+library(evmix)
+tshapeplot(data$mua, legend.loc = "topleft")
+abline(v=40, col="red", lwd=2)
+```
+
+```{r}
+tscaleplot(data$mua, legend.loc = "bottomleft")
+abline(v=40, col="red", lwd=2)
+```
+
+Ước lượng tham số của phân bố GPD.
+
+```{r}
+library(ismev)
+gpd_fit <- gpd.fit(data$mua, threshold = 40, npy= 365 * 24)
+```
+
+Như vậy, phân bố GPD ước tính được có `shape=12.41` và `scale=-0.05`.
+
+
+```{r}
+# Plot diagnostic plots for GPD fit
+gpd.diag(gpd_fit)
+```
+
+### 7.2. GEV model
+
+```{r}
+library(dplyr)
+library(lubridate)
+max_annual_rain <- data %>%
+  group_by(month=floor_date(data$ngay, "halfyear")) %>%
+  summarise(max_rain = max(mua, na.rm = T))
+
+head(max_annual_rain, 10)
+```
+
+```{r}
+year <- ts(as.vector(max_annual_rain$max_rain), start=c(2008, 1), frequency=1)
+```
+
+```{r}
+plot(year, type="o", ylab="Lượng mưa một giờ")
+```
+
+
+
+```{r}
+gev_fit <- gev.fit(max_annual_rain$max_rain)
+```
+
+```{r}
+gev.diag(gev_fit)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
