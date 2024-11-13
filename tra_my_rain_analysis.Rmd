@@ -27,6 +27,8 @@ nrow(data)
 
 **Số dữ liệu trống ở mỗi cột**:
 
+### TODO: xem xét xem dữ liệu có trống liên tiếp hay không? Đề xuất cách khác.
+
 ```{r}
 colSums(is.na(data))
 ```
@@ -148,6 +150,7 @@ month_ts <- ts(as.vector(monthly_rain$luong_mua_trung_binh), start=c(2008, 1), f
 plot(month_ts, type="o", xlab="Thời gian", ylab="Lượng mưa trung bình tháng", main="Lượng mưa hàng tháng tại tỉnh Trà My, 2008 - 2018")
 ```
 
+
 ## 3. Phân tích lượng mưa
 ### 3.1. Phân tích xu hướng
 
@@ -238,7 +241,7 @@ Trước hết, ta xét mô hình ARMA(1, 1)
 
 
 ```{r}
-arma.month.7 <- arima(month_ts, c(7, 0, 1), method = "ML",
+arma.month.7 <- arima(month_ts, c(1, 0, 1), method = "ML",
                   seasonal = list(order=c(1, 0, 1), period=12))
 arma.month.7
 ```
@@ -299,9 +302,9 @@ detectAO(arma.month.7)
 Có thể thấy rằng hai thời điểm t = 108 và 119 đều là những additive outlier do giá trị test của AO là lớn hơn IO. Như vậy, ta sẽ train lại mô hình nhưng thêm các tham số `ao` vào.
 
 ```{r}
-final.arma <- arimax(month_ts, c(7, 0, 1), method = "ML",
+final.arma <- arimax(month_ts, c(1, 0, 1), method = "ML",
                      seasonal = list(order=c(1, 0, 1), period=12),
-                     io=c(108, 119))
+                     io=c(69, 70, 71, 72, 108, 119))
 final.arma
 ```
 
@@ -335,8 +338,37 @@ acf(coredata(residuals_arma_final))
 
 
 ```{r}
-coef(final.arma)[-13:-12]
+coef(final.arma)[-6:-7]
 ```
+
+```{r}
+forecast_data <- predict(final.arma, n.ahead = 12)
+```
+
+```{r}
+# Tính khoảng tin cậy
+upper_bound <- forecast_data$pred + 1.96 * forecast_data$se
+lower_bound <- forecast_data$pred - 1.96 * forecast_data$se
+
+```
+
+```{r}
+# Vẽ chuỗi dữ liệu gốc
+ts.plot(month_ts, ylim = range(lower_bound, upper_bound), xlim=c(0, 132),
+        main = "Dự đoán từ mô hình ARIMAX", ylab = "Giá trị", xlab = "Thời gian")
+
+# Vẽ đường dự đoán
+lines(length(month_ts) + 1:length(forecast_data$pred), forecast_data$pred, col = "blue", lwd = 2)
+
+# Vẽ khoảng tin cậy
+lines(length(month_ts) + 1:length(upper_bound), upper_bound, col = "red", lty = 2)
+lines(length(month_ts) + 1:length(lower_bound), lower_bound, col = "red", lty = 2)
+abline(h = 0)
+abline(h = 2, col='red')
+```
+
+
+
 ## 6. Phân tích trượt lở
 
 ### 6.1. Phương pháp dùng lượng mưa tích lũy
